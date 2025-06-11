@@ -138,6 +138,7 @@ float computeDelayTime(float phaseOffsetDeg, float freqHz) {
 
 }
 
+/*
 float readDelayInterpolated(ShiftDelay* alg, float delayTimeSec, float sampleRate) {
 
     if (delayTimeSec < 0.0f) delayTimeSec = 0.0f;
@@ -158,6 +159,48 @@ float readDelayInterpolated(ShiftDelay* alg, float delayTimeSec, float sampleRat
     
     return (1.0f - frac) * alg->delayBuffer[index1] + frac * alg->delayBuffer[index2];
 }
+*/
+
+// The following code reimplements negative shifting and multiple buffer wraps
+float readDelayInterpolated(ShiftDelay* alg, float delayTimeSec, float sampleRate) {
+    // Allow negative delays but prevent extreme values that could cause excessive looping
+    const int maxWraps = 10; // Reasonable limit to prevent infinite loops
+    const float maxDelayTime = static_cast<float>(ShiftDelay::maxDelaySamples * maxWraps) / sampleRate;
+
+    if (delayTimeSec > maxDelayTime) {
+        delayTimeSec = maxDelayTime;
+    } else if (delayTimeSec < -maxDelayTime) {
+        delayTimeSec = -maxDelayTime;
+    }
+
+    float delaySamples = delayTimeSec * sampleRate;
+    float readPos = static_cast<float>(alg->writeIndex) - delaySamples;
+
+    // Handle multiple buffer wraps with safety counter
+    int wrapCount = 0;
+    while (readPos < 0.0f && wrapCount < maxWraps) {
+        readPos += static_cast<float>(ShiftDelay::maxDelaySamples);
+        wrapCount++;
+    }
+
+    while (readPos >= static_cast<float>(ShiftDelay::maxDelaySamples) && wrapCount < maxWraps) {
+        readPos -= static_cast<float>(ShiftDelay::maxDelaySamples);
+        wrapCount++;
+    }
+
+    // Final safety clamp in case we hit the wrap limit
+    if (readPos < 0.0f) {
+        readPos = 0.0f;
+    } else if (readPos >= static_cast<float>(ShiftDelay::maxDelaySamples)) {
+        readPos = static_cast<float>(ShiftDelay::maxDelaySamples) - 1.0f;
+    }
+
+    int index1 = static_cast<int>(readPos) % ShiftDelay::maxDelaySamples;
+    int index2 = (index1 + 1) % ShiftDelay::maxDelaySamples;
+    float frac = readPos - static_cast<int>(readPos);
+
+    return (1.0f - frac) * alg->delayBuffer[index1] + frac * alg->delayBuffer[index2];
+}
 
 void stepShiftDelay(_NT_algorithm* self, float* busFrames, int numFramesBy4) {
 
@@ -167,7 +210,7 @@ void stepShiftDelay(_NT_algorithm* self, float* busFrames, int numFramesBy4) {
     float sampleRate = static_cast<float>(NT_globals.sampleRate);
 
     // Validate sample rate and delay buffer
-    if (sampleRate < 8000.0f || sampleRate > 192000.0f || !alg->delayBuffer) {
+    if (sampleRate < 32000.0f || sampleRate > 192000.0f || !alg->delayBuffer) {
         return; // Early exit if invalid
     }
 
@@ -202,7 +245,8 @@ void stepShiftDelay(_NT_algorithm* self, float* busFrames, int numFramesBy4) {
     float baseWetMix = static_cast<float>(alg->v[kParamWetMix]) / 100.0f; // Convert percentage to 0-1
     float basePitchCV = static_cast<float>(alg->v[kParamPitchCV]);
 
-    // Handle pot stabilization
+    // Handle delay pot stabilization
+/*
     bool potChanged = (currentDelayPotValue != alg->previousDelayPotValue);
     if (potChanged) {
         alg->stableSampleCount = 0;
@@ -217,7 +261,23 @@ void stepShiftDelay(_NT_algorithm* self, float* busFrames, int numFramesBy4) {
             alg->stableDelayPotValue = currentDelayPotValue;
         }
     }
-
+*/
+    bool potChanged = (currentDelayPotValue != alg->previousDelayPotValue);
+    if (potChanged) {
+        alg->stableSampleCount = 0;
+        alg->previousDelayPotValue = currentDelayPotValue;
+    } else {
+        alg->stableSampleCount += numFrames;
+        int samplesForStabilization = static_cast<int>(alg->stabilizationTimeSec * sampleRate);
+        if (alg->stableSampleCount >= samplesForStabilization && !alg->crossfadeActive) {
+            alg->crossfadeActive = true;
+            alg->crossfadeSampleCount = 0;
+            alg->oldDelaySec = alg->smoothedBaseDelaySec;
+            alg->stableDelayPotValue = currentDelayPotValue;
+            // Optional: Set to exact value to prevent re-triggering
+            alg->stableSampleCount = samplesForStabilization;
+        }
+    }
     // Smooth base delay
     float baseDelaySecTarget = clamp(alg->stableDelayPotValue, 0.005f, alg->maxDelaySec);
     float baseSmoothingCoeff = std::exp(-1.0f / (alg->baseSmoothingTimeSec * sampleRate));
@@ -241,19 +301,21 @@ void stepShiftDelay(_NT_algorithm* self, float* busFrames, int numFramesBy4) {
         // Smooth wet mix
         alg->smoothedWetMix = baseSmoothingCoeff * alg->smoothedWetMix + (1.0f - baseSmoothingCoeff) * wetMix;
 
+
         // Calculate frequency and delay time
         float freqHz = pitchCVToFrequency(pitchCV);
-        if (freqHz < 0.1f) freqHz = 0.1f; // Prevent division by very small numbers
-        
+        if (freqHz < 0.1f) freqHz = 0.1f;
+
         float delayTimeTarget = computeDelayTime(phaseShiftDegrees, freqHz);
         float maxDelaySecActual = static_cast<float>(alg->maxDelaySamples) / sampleRate;
-        delayTimeTarget = clamp(delayTimeTarget, -maxDelaySecActual, maxDelaySecActual);
 
-        float totalDelayTime = std::abs(delayTimeTarget) + alg->smoothedBaseDelaySec;
-        totalDelayTime = clamp(totalDelayTime, 0.001f, maxDelaySecActual); // Ensure positive delay
-        
-        alg->smoothedDelayTimeSec = baseSmoothingCoeff * alg->smoothedDelayTimeSec + 
-                                   (1.0f - baseSmoothingCoeff) * totalDelayTime;
+        // Combine phase delay with base delay (like VCV Rack)
+        float totalDelayTime = delayTimeTarget + alg->smoothedBaseDelaySec;
+        totalDelayTime = clamp(totalDelayTime, -maxDelaySecActual, maxDelaySecActual);
+
+        // Smooth the TOTAL delay time (not just base)
+        alg->smoothedDelayTimeSec = baseSmoothingCoeff * alg->smoothedDelayTimeSec +
+        (1.0f - baseSmoothingCoeff) * totalDelayTime;
 
         // Get input sample
         float inputSample = audioInput[i];
@@ -264,8 +326,14 @@ void stepShiftDelay(_NT_algorithm* self, float* busFrames, int numFramesBy4) {
             int crossfadeSamples = static_cast<int>(alg->crossfadeTimeSec * sampleRate);
             if (alg->crossfadeSampleCount < crossfadeSamples) {
                 float t = static_cast<float>(alg->crossfadeSampleCount) / static_cast<float>(crossfadeSamples);
-                float oldOutput = readDelayInterpolated(alg, std::abs(delayTimeTarget) + alg->oldDelaySec, sampleRate);
+
+                // Calculate old total delay (phase + old base delay)
+                float oldTotalDelay = delayTimeTarget + alg->oldDelaySec;
+                oldTotalDelay = clamp(oldTotalDelay, -maxDelaySecActual, maxDelaySecActual);
+
+                float oldOutput = readDelayInterpolated(alg, oldTotalDelay, sampleRate);
                 float newOutput = readDelayInterpolated(alg, alg->smoothedDelayTimeSec, sampleRate);
+
                 outputSample = (1.0f - t) * oldOutput + t * newOutput;
                 alg->crossfadeSampleCount++;
             } else {

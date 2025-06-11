@@ -1,0 +1,47 @@
+Build Notes
+
+==================================================================================
+sudo apt ugprade
+sudo apt install -y build-essential git gcc-arm-none-eabi binutils-arm-none-eabi
+==================================================================================
+arm-none-eabi-gcc --version
+arm-none-eabi-gcc (15:10.3-2021.07-4) 10.3.1 20210621 (release)
+Copyright (C) 2020 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+==================================================================================
+Updated Makefiles - correcting issues from both
+==================================================================================
+mkdir -p ~/distingnt-sdk
+cd ~/distingnt-sdk
+git clone https://github.com/expertsleepersltd/distingNT.git
+==================================================================================
+mkdir DNT_ShiftDelay (in ~)
+create makefile
+create ShiftDelay.cpp
+
+Had to fix the make file since ~ is not handled.
+SDK_PATH = $(HOME)/distingNT_API/include/distingnt
+
+Added debug-path to Makefile:
+debug-path:
+	@echo "SDK_PATH resolves to: $(SDK_PATH)"
+	@echo "Include flag: -I$(SDK_PATH)"
+	@ls -la $(SDK_PATH)
+==================================================================================
+Make
+arm-none-eabi-g++ -mcpu=cortex-m7 -mthumb -mfpu=fpv5-d16 -mfloat-abi=hard -O2 -ffunction-sections -fdata-sections -Wall -std=c++17 -I/home/jkeizer/distingNT_API/include/distingnt -DSTM32H750xx -c -fPIC -o CLCShiftDelay.o CLCShiftDelay.cpp
+arm-none-eabi-g++ -r -o PLUGIN.O CLCShiftDelay.o
+jkeizer@LinuxMint2:~/DNT_ShiftDelay$ ls -l
+total 36
+-rw-r--r-- 1 jkeizer jkeizer 8125 Jun 10 10:47 CLCShiftDelay.cpp
+-rw-rw-r-- 1 jkeizer jkeizer 9400 Jun 10 10:52 CLCShiftDelay.o
+-rw-rw-r-- 1 jkeizer jkeizer 1084 Jun 10 10:52 Makefile
+-rw-rw-r-- 1 jkeizer jkeizer 9400 Jun 10 10:52 PLUGIN.O
+==================================================================================
+Disting NT USB disk mode
+created plug-ins directory under programs
+copied CLCShiftDelay.o to plug-ins
+
+
+
