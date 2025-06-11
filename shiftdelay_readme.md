@@ -89,7 +89,7 @@ The algorithm was originally developed as a VCV Rack module and adapted for the 
 
 ## License
 
-[Specify your license here]
+MIT License
 
 ## Credits
 
